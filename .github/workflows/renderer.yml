@@ -1,0 +1,45 @@
+name: Build patched Waywallen scene renderer
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: waywallen/open-wallpaper-engine
+          ref: 5dd7b4cfb38fe21c64e9c036bbd89ae5b866b49e
+          path: engine
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: hypengw/wavsen
+          ref: fe27f752e29a94565b6a33083d90df9a020ee76f
+          path: engine/wavsen
+          persist-credentials: false
+      - name: Select patched local dependency
+        run: |
+          git -C engine/wavsen apply "$PWD"/patches/0001-*.patch
+          git -C engine apply "$PWD/patches/local-dependency.patch"
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends bzip2 ca-certificates curl file git glslang-tools libasound2t64 libegl1 libexpat1-dev libfontconfig1-dev libgbm-dev libgl1 libgtk-3-0 libnss3 libpipewire-0.3-dev libpulse-dev libspa-0.2-dev libxkbcommon0 pkg-config xz-utils
+          curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -o "$RUNNER_TEMP/miniconda.sh"
+          bash "$RUNNER_TEMP/miniconda.sh" -b -p "$RUNNER_TEMP/conda"
+          echo "$RUNNER_TEMP/conda/bin" >> "$GITHUB_PATH"
+      - name: Build with release toolchain
+        working-directory: engine
+        env:
+          WAYWALLEN_REF: eddac09fff363c7698746cb0307b13fc542c032f
+          BUILD_TYPE: Release
+        run: bash scripts/build_waywallen_plugin.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waywallen-wescene-renderer-linux-aarch64
+          path: engine/build/waywallen-plugin-bundle/bin/waywallen-wescene-renderer
+          if-no-files-found: error

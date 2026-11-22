@@ -1,0 +1,106 @@
+From e060c2c17702b874a729cdc260054edf1d85ae35 Mon Sep 17 00:00:00 2001
+From: NEURAX08 <neurax08@gmail.com>
+Date: Sun, 22 Nov 2026 11:29:41 +0800
+Subject: [PATCH] Match cached DRM imports to their backing DMA-BUF objects
+
+- Match every exported object by device and inode as well as layout and decoder surface.
+- Keep distinct imports under the existing bounded eviction and GPU lifetime rules.
+---
+ src/video/yuv_to_rgba.cpp | 41 ++++++++++++++++++++++++++-------------
+ 1 file changed, 28 insertions(+), 13 deletions(-)
+
+diff --git a/src/video/yuv_to_rgba.cpp b/src/video/yuv_to_rgba.cpp
+index a81c65b..0a7bce4 100644
+--- a/src/video/yuv_to_rgba.cpp
++++ b/src/video/yuv_to_rgba.cpp
+@@ -1,5 +1,6 @@
+ module;
+ #include <cstdint>
++#include <sys/stat.h>
+ #include "nv12_to_rgba.spv.h" // generated at build time by glslangValidator
+ 
+ module wavsen.video;
+@@ -365,6 +366,17 @@ namespace
+ constexpr u32 kMaxConversionContexts { 16 };
+ constexpr u32 kMaxDrmImports { 64 };
+ 
++// Imported Vulkan memory pins its DMA-BUF, so its inode cannot be recycled
++// while the corresponding cache entry is usable. FD numbers are not stable.
++struct DrmObjectIdentities {
++    struct Identity {
++        dev_t device;
++        ino_t inode;
++        bool operator==(const Identity&) const = default;
++    } objects[4] {};
++    bool operator==(const DrmObjectIdentities&) const = default;
++};
++
+ DrmFrameView drm_signature(const DrmFrameView& view) {
+     auto signature = view;
+     for (u32 i = u32(); i < signature.object_count; ++i) {
+@@ -407,6 +419,7 @@ bool same_drm_signature(const DrmFrameView& lhs, const DrmFrameView& rhs) {
+ struct DrmImportEntry {
+     DrmResourceKey         key;
+     DrmFrameView           signature;
++    DrmObjectIdentities    identities;
+     Vec<vvk::DeviceMemory> memories;
+     vvk::Image             image;
+     vvk::Image             uv_image; // When split_planes, UV is a separate R8G8 image.
+@@ -725,7 +738,7 @@ auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phy
+ 
+     VkImageDrmFormatModifierExplicitCreateInfoEXT modifier_info {};
+     modifier_info.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+-    modifier_info.drmFormatModifier           = drm.objects[0].format_modifier;
++    modifier_info.drmFormatModifier           = drm.objects[planes[0].object_index].format_modifier;
+     modifier_info.drmFormatModifierPlaneCount = 2;
+     modifier_info.pPlaneLayouts               = plane_layouts;
+ 
+@@ -2048,24 +2061,25 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
+     auto* target_entry = reservation.state_->target;
+ 
+     DrmImportEntry* source      = nullptr;
+-    Option<usize>   stale_index = None();
+     const auto      key         = frame.resource_key();
+     const auto&     view        = frame.view();
++    DrmObjectIdentities identities;
++    for (u32 i {}; i < view.object_count; ++i) {
++        const auto index = i.to_primitive();
++        struct stat info {};
++        if (::fstat(view.objects[index].fd, &info) != 0) {
++            return Err(Error { "submit_drm_prime: cannot identify DMA-BUF object"_str });
++        }
++        identities.objects[index] = { info.st_dev, info.st_ino };
++    }
+     for (usize index {}; index < pipeline_state_->imports.len(); ++index) {
+         auto* candidate = pipeline_state_->imports[index].get();
+-        if (candidate->key != key) continue;
+-        if (same_drm_signature(candidate->signature, view)) {
+-            if (candidate->in_flight != u32()) return Ok(None());
+-            source = candidate;
+-        } else {
+-            if (candidate->in_flight != u32()) return Ok(None());
+-            stale_index = Some(index);
+-        }
++        if (candidate->key != key || candidate->identities != identities ||
++            !same_drm_signature(candidate->signature, view)) continue;
++        if (candidate->in_flight != u32()) return Ok(None());
++        source = candidate;
+         break;
+     }
+-    if (stale_index.is_some()) {
+-        (void)pipeline_state_->imports.remove(*stale_index);
+-    }
+     if (! source) {
+         if (pipeline_state_->imports.len() >= usize(pipeline_state_->max_imports.to_primitive())) {
+             Option<usize> eviction;
+@@ -2083,6 +2097,7 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
+         auto imported = create_drm_import(device_, phys_, frame);
+         if (imported.is_err()) return Err(rstd::move(imported).unwrap_err());
+         auto entry = rstd::move(imported).unwrap();
++        entry->identities = identities;
+         source     = entry.get();
+         pipeline_state_->imports.push(rstd::move(entry));
+     }
+-- 
+2.56.1
+

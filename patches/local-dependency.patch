@@ -1,0 +1,21 @@
+--- a/lito.toml
++++ b/lito.toml
+@@ -46,7 +46,7 @@
+ liffto = { version = "0.1.0" }
+ vvk = { version = "0.1.1" }
+ spirvto = { version = "0.1.0" }
+-wavsen = { git = "https://github.com/hypengw/wavsen.git" }
++wavsen = { path = "wavsen" }
+ vrento = { git = "https://github.com/vecren/vrento.git" }
+ vectext = { git = "https://github.com/vecren/vectext.git" }
+ 
+--- a/lito.lock
++++ b/lito.lock
+@@ -463,7 +463,6 @@
+ [[packages]]
+ name = "wavsen"
+ version = "0.1.0"
+-source = "git+https://github.com/hypengw/wavsen.git#fe27f752e29a94565b6a33083d90df9a020ee76f"
+ dependencies = [
+   "rstd-core",
+   "rstd-dlopn",
